@@ -1,8 +1,13 @@
 import pandas as pd
 import numpy as np
 import xgboost as xgb
+from sklearn.metrics.scorer import make_scorer
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
+from sklearn.model_selection import StratifiedKFold
+import scipy.stats as st
+from sklearn.model_selection import RandomizedSearchCV
+
 
 class League:
     def __init__(self, folder_path):
@@ -15,6 +20,7 @@ class League:
         self.X = None
         self.Y = None
         self.bet_odds = None
+        self.best_score_result = None
 
 
     @staticmethod
@@ -132,25 +138,31 @@ class League:
         pass
 
     @staticmethod
-    def __prediction_metric(preds, dtrain):
-        labels = [1.0 if x > 0.5 else 2.0 if x < -0.5 else 0.0 for x in dtrain.get_label()]
-        predictions = [1.0 if x > 0.5 else 2.0 if x < -0.5 else 0.0 for x in  preds]
+    def __prediction_metric(dtrain, preds):
+        labels = [1.0 if x > 0.5 else 2.0 if x < -0.5 else 0.0 for x in dtrain]
+        predictions = [1.0 if x > 0.5 else 2.0 if x < -0.5 else 0.0 for x in preds]
         score = accuracy_score(labels, predictions)
-        return "match_score", score
+        return score
 
-    def train_model(self, test_size=0.2, max_depth=3, eta=1.0, n_rounds=100):
-        data_train, data_test, labels_train, labels_test = train_test_split(self.X, self.Y, test_size=test_size, random_state=42)
-        dtrain = xgb.DMatrix(data_train, label=labels_train)
-        dtest = xgb.DMatrix(data_test, label=labels_test)
-        param = {'objective': 'reg:linear', 'eval_metric': 'rmse', 'max_depth': max_depth, 'eta': eta, 'seed':0, 'silent': True}
-        evallist = [(dtest, 'eval'), (dtrain, 'train')]
-        #xgb_model = xgb.train(param, dtrain, n_rounds, evallist, feval=self.__prediction_metric, maximize=True, early_stopping_rounds=10)
-        clf = xgb.XGBClassifier(max_depth=max_depth, n_estimators=n_rounds, learning_rate=eta, objective="reg:linear", seed=0)
-        xgb_model = xgb.train(param, dtrain, n_rounds, evallist)
-        cvresult = xgb.cv(clf.get_xgb_params(), dtrain, num_boost_round=100, nfold=15, metrics=['rmse'], stratified=True)
+    def train_model(self, test_size=0.2, param_grid={}, n_iter=10):
+        data_train, data_test, labels_train, labels_test = train_test_split(self.X, self.Y, test_size=test_size, random_state=0)
+        fit_params = {'eval_metric': 'rmse',
+                      'early_stopping_rounds': 50,
+                      'eval_set': [(data_test, labels_test), (data_train, labels_train)]}
+        clf = xgb.XGBRegressor(objective="reg:linear", seed=0, nthread=-1, silent=True)
+        skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=0)
+        rs_clf = RandomizedSearchCV(clf, param_grid,
+                                    n_iter=n_iter, n_jobs=1, verbose=False,
+                                    cv=skf.split(data_train, labels_train), fit_params=fit_params,
+                                    #scoring=make_scorer(self.__prediction_metric, greater_is_better=True),
+                                     random_state=0)
+        rs_clf.fit(data_train, labels_train)
+        self.best_score_result = rs_clf.best_score_
+        predictions = rs_clf.best_estimator_.predict(data_train)
+        self.model = rs_clf.best_estimator_
 
-        return 1
-
+    def summary(self):
+        print("best score for %s of year %s: %s" % (self.name, self.year, self.best_score_result))
 
     def save_moddel(self):
         pass
@@ -158,6 +170,17 @@ class League:
 if __name__ == '__main__':
     testObj = League('data/england_17.csv')
     testObj.create_dataset(5, 'result regression')
-    testObj.train_model()
+    params = {
+        'min_child_weight': st.expon(0, 40),
+        'gamma': st.expon(0, 40),
+        'subsample': st.beta(10, 1),
+        'colsample_bytree': st.beta(10, 1),
+        'max_depth': st.randint(3, 20),
+        'n_estimators': st.randint(5, 100),
+        'learning_rate': [10**(-4 * np.random.rand()) for _ in range(10)],
+        'reg_alpha': st.expon(0, 40)
+    }
+    testObj.train_model(param_grid=params, n_iter=10)
+    testObj.summary()
 
-#TODO: check what to do with first rounds.
+#TODO: check what to do with first   rounds.
