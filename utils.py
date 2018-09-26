@@ -1,17 +1,16 @@
 import pandas as pd
 import numpy as np
 import xgboost as xgb
-from sklearn.metrics.scorer import make_scorer
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
-from sklearn.model_selection import StratifiedKFold
-import scipy.stats as st
-from sklearn.model_selection import RandomizedSearchCV
+from sklearn.model_selection import GridSearchCV
+import pickle
+import os
 
 
 class League:
     def __init__(self, folder_path):
-        self.name, self.year = folder_path.split("_")[0], folder_path.split("_")[1]
+        self.name, self.year = folder_path.split("_")[0].split("/")[1], folder_path.split("_")[1].split(".")[0]
         self.model = None
         self.path = folder_path
         self.look_back = None
@@ -144,43 +143,55 @@ class League:
         score = accuracy_score(labels, predictions)
         return score
 
-    def train_model(self, test_size=0.2, param_grid={}, n_iter=10):
+    def train_model(self, test_size=0.2, param_grid={}):
         data_train, data_test, labels_train, labels_test = train_test_split(self.X, self.Y, test_size=test_size, random_state=0)
-        fit_params = {'eval_metric': 'rmse',
-                      'early_stopping_rounds': 50,
-                      'eval_set': [(data_test, labels_test), (data_train, labels_train)]}
         clf = xgb.XGBRegressor(objective="reg:linear", seed=0, nthread=-1, silent=True)
-        skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=0)
-        rs_clf = RandomizedSearchCV(clf, param_grid,
-                                    n_iter=n_iter, n_jobs=1, verbose=False,
-                                    cv=skf.split(data_train, labels_train), fit_params=fit_params,
-                                    #scoring=make_scorer(self.__prediction_metric, greater_is_better=True),
-                                     random_state=0)
+        rs_clf = GridSearchCV(clf, param_grid, n_jobs=1, verbose=False, cv=5)
         rs_clf.fit(data_train, labels_train)
-        self.best_score_result = rs_clf.best_score_
-        predictions = rs_clf.best_estimator_.predict(data_train)
+        pred_train = rs_clf.best_estimator_.predict(data_train)
+        pred_test = rs_clf.best_estimator_.predict(data_test)
+        score = self.__prediction_metric(labels_train, pred_train)
+        score_test = self.__prediction_metric(labels_test, pred_test)
+        print("league: %s, year: %s, lookback: %s" % (self.name, self.year, self.look_back))
+        print("score train: %s" % score)
+        print("score test: %s" % score_test)
+        print("=======" * 3)
+        print(rs_clf.best_estimator_.get_xgb_params())
         self.model = rs_clf.best_estimator_
 
-    def summary(self):
-        print("best score for %s of year %s: %s" % (self.name, self.year, self.best_score_result))
-
-    def save_moddel(self):
-        pass
+    def save_model(self, folder):
+        pickle.dump(self.model, open(folder + "/model_%s_%s_%s.pickle.dat" % (self.look_back, self.name, self.year), "wb"))
 
 if __name__ == '__main__':
-    testObj = League('data/england_17.csv')
-    testObj.create_dataset(5, 'result regression')
     params = {
-        'min_child_weight': st.expon(0, 40),
-        'gamma': st.expon(0, 40),
-        'subsample': st.beta(10, 1),
-        'colsample_bytree': st.beta(10, 1),
-        'max_depth': st.randint(3, 20),
-        'n_estimators': st.randint(5, 100),
-        'learning_rate': [10**(-4 * np.random.rand()) for _ in range(10)],
-        'reg_alpha': st.expon(0, 40)
+        'min_child_weight': [1],
+        'gamma': [0, 0.1, 0.5, 1, 2],
+        'subsample': [1, 0.8, 0.9],
+        'colsample_bytree': [1, 0.8, 0.9],
+        'max_depth': [3, 4, 5, 6, 7],
+        'n_estimators': [100],
+        'learning_rate': [0.001, 0.1, 0.01, 0.5],
+        'reg_alpha': [0, 0.1, 0.5, 1]
     }
-    testObj.train_model(param_grid=params, n_iter=10)
-    testObj.summary()
+    for file_ in os.listdir("data/"):
+        file = "data/" + file_
+        for look_back in [4, 5, 6]:
+            testObj = League(file)
+            testObj.create_dataset(look_back, 'result regression')
+            testObj.train_model(param_grid=params, n_iter=20)
+            testObj.save_model("data/models")
+    # params = {
+    #     'min_child_weight': st.expon(0, 40),
+    #     'gamma': st.expon(0, 40),
+    #     'subsample': st.beta(10, 1),
+    #     'colsample_bytree': st.beta(10, 1),
+    #     'max_depth': st.randint(2, 15),
+    #     'n_estimators': st.randint(5, 100),
+    #     'learning_rate': [10**(-4 * np.random.rand()) for _ in range(10)],
+    #     'reg_alpha': st.expon(0, 40)
+    # }
+
+
+
 
 #TODO: check what to do with first   rounds.
